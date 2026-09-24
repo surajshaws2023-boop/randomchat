@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hello Stranger</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://checkout.razorpay.com/v1/checkout.js" async></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
@@ -36,6 +38,17 @@ label.age{display:flex;gap:.6rem;align-items:flex-start;margin:0 0 1.25rem;color
 label.age input{margin-top:.3rem;accent-color:var(--accent)}
 .online{margin-top:1.5rem;color:var(--dim);font-size:.9rem}
 #landErr{color:var(--danger);min-height:1.5em;margin:.75rem 0 0}
+
+.prefs{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:0 0 1.25rem}
+.prefs input,.prefs select{min-width:0;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:.65rem .8rem;font:inherit}
+#interests,#filter{grid-column:1/-1}
+
+.acct{display:grid;gap:.6rem;margin:0 0 1.25rem;color:var(--dim);font-size:.9rem}
+.acct b{color:var(--text)}
+.acct select{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:.65rem .8rem;font:inherit}
+.acct .row2{display:flex;gap:.5rem}.acct .row2 select{flex:1}
+.acct .plans{display:flex;gap:.5rem}
+.acct .plans button{flex:1;padding:.6rem .3rem;font-size:.85rem}
 
 /* Chat */
 #chat{height:100%;display:grid;grid-template-columns:1fr 360px;gap:12px;padding:12px}
@@ -72,6 +85,17 @@ body.textmode #chat{grid-template-columns:minmax(0,720px);justify-content:center
   <div class="card">
     <h1>Hello, stranger.</h1>
     <p>Get paired with someone random for a video or text conversation. Nothing is saved, and you can hit Next any time.</p>
+    <div id="acct" class="acct"></div>
+    <div class="prefs">
+      <input id="interests" placeholder="Interests, separated by commas (optional)" maxlength="80">
+      <select id="country" aria-label="Your country"></select>
+      <select id="language" aria-label="Your language"></select>
+      <select id="filter" aria-label="Match with">
+        <option value="any">Match with anyone</option>
+        <option value="country">Same country only</option>
+        <option value="language">Same language only</option>
+      </select>
+    </div>
     <label class="age"><input type="checkbox" id="age"> <span>I am 18 or older and agree to be respectful. Reports may be reviewed.</span></label>
     <div class="row">
       <button id="startVideo">Start video chat</button>
@@ -99,6 +123,7 @@ body.textmode #chat{grid-template-columns:minmax(0,720px);justify-content:center
       <button id="muteBtn" class="ghost">Mute</button>
       <button id="camBtn" class="ghost">Camera off</button>
       <button id="reportBtn" class="ghost">Report</button>
+      <button id="soundBtn" class="ghost">Sound on</button>
       <button id="stopBtn" class="danger">Stop</button>
     </div>
   </aside>
@@ -114,6 +139,113 @@ const ICE = { iceServers: [
 ]};
 
 let ws, pc, localStream, mode = 'video', connected = false, queue = Promise.resolve();
+
+/* ---------- Match preferences ---------- */
+const COUNTRIES = ['IN','US','GB','CA','AU','DE','FR','ES','BR','MX','ID','PH','PK','BD','NG','EG','TR','RU','JP','KR'];
+const LANGS = ['en','hi','bn','es','fr','ar','pt','de','ru','ja','ko','zh','tr','id','ur'];
+const rn = new Intl.DisplayNames(['en'], { type: 'region' }), ln = new Intl.DisplayNames(['en'], { type: 'language' });
+const fill = (sel, codes, name, def) => {
+  $(sel).innerHTML = codes.map(c => `<option value="${c.toLowerCase()}">${name.of(c)}</option>`).join('');
+  $(sel).value = def.toLowerCase();
+};
+const loc = (navigator.language || 'en-US').split('-');
+fill('#country', COUNTRIES, rn, loc[1] || 'US');
+fill('#language', LANGS, ln, loc[0]);
+const prefs = () => ({
+  interests: $('#interests').value.split(',').map(s => s.trim()).filter(Boolean),
+  country: $('#country').value, language: $('#language').value, filter: $('#filter').value,
+  token, want: ($('#want') || {}).value || ''
+});
+
+/* ---------- Account and premium ---------- */
+let cfg = {}, token = localStorage.getItem('token'), user = null;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function api(path, body){
+  const r = await fetch('/api/' + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'Something went wrong.');
+  return d;
+}
+function renderAcct(){
+  const el = $('#acct');
+  if (!cfg.enabled || !cfg.google) { el.innerHTML = ''; return; }
+  if (!user){
+    el.innerHTML = '<div id="gbtn"></div><small>Sign in to use the paid gender filter.</small>';
+    if (window.google && google.accounts){
+      google.accounts.id.initialize({ client_id: cfg.google, callback: onGoogle });
+      google.accounts.id.renderButton($('#gbtn'), { theme: 'outline', size: 'large' });
+    }
+    return;
+  }
+  let h = `<div>Signed in as <b>${esc(user.email)}</b> · <a href="#" id="logout">Sign out</a></div>`;
+  if (!user.gender) h += '<div class="row2"><select id="gsel"><option value="">I am…</option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option></select><button id="gsave" class="ghost">Save</button></div><small>You cannot change this later.</small>';
+  if (user.premium) h += `<div>Premium until <b>${new Date(user.premiumUntil).toLocaleDateString()}</b></div><select id="want" aria-label="Gender filter"><option value="">Match with anyone</option><option value="female">Women only</option><option value="male">Men only</option></select>`;
+  if (cfg.razorpay) h += '<small>' + (user.premium ? 'Add more time:' : 'Unlock the gender filter:') + '</small><div class="plans">' + Object.entries(cfg.plans).map(([k, p]) => `<button data-plan="${k}">${esc(p.label)}<br>₹${p.rupees}</button>`).join('') + '</div>';
+  el.innerHTML = h;
+}
+async function onGoogle(r){
+  try {
+    const d = await api('google', { credential: r.credential });
+    token = d.token; user = d.user; localStorage.setItem('token', token); renderAcct();
+  } catch (e) { $('#landErr').textContent = e.message; }
+}
+async function buy(plan){
+  try {
+    const o = await api('order', { plan });
+    new Razorpay({
+      key: o.keyId, order_id: o.orderId, amount: o.amount, currency: 'INR',
+      name: 'Hello Stranger', description: cfg.plans[plan].label, prefill: { email: user.email },
+      handler: async r => {
+        try { ({ user } = await api('verify', r)); renderAcct(); }
+        catch (e) { $('#landErr').textContent = e.message; }
+      }
+    }).open();
+  } catch (e) { $('#landErr').textContent = e.message; }
+}
+$('#acct').onclick = async e => {
+  const t = e.target;
+  try {
+    if (t.id === 'logout'){ e.preventDefault(); token = user = null; localStorage.removeItem('token'); renderAcct(); }
+    if (t.id === 'gsave' && $('#gsel').value){ ({ user } = await api('profile', { gender: $('#gsel').value })); renderAcct(); }
+    if (t.dataset.plan) buy(t.dataset.plan);
+  } catch (err) { $('#landErr').textContent = err.message; }
+};
+window.addEventListener('load', async () => {
+  try { cfg = await api('config'); } catch (e) {}
+  if (token && cfg.enabled){
+    try { user = (await api('me')).user; } catch (e) { token = null; localStorage.removeItem('token'); }
+  }
+  renderAcct();
+});
+
+/* ---------- Sounds and tab alerts ---------- */
+let soundOn = true, actx;
+function audio(){
+  actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function beep(freq, dur, delay = 0){
+  if (!soundOn) return;
+  try {
+    const c = audio(), t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.08, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + dur);
+  } catch (e) {}
+}
+const chime = () => { beep(660, .12); beep(880, .18, .13); };
+const blip = () => beep(520, .08);
+const down = () => beep(300, .25);
+const baseTitle = document.title;
+function alertTitle(t){ if (document.hidden) document.title = '💬 ' + t; }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) document.title = baseTitle; });
 
 /* ---------- UI helpers ---------- */
 function setStatus(t){ $('#status').textContent = t; }
@@ -138,6 +270,7 @@ async function start(m){
   $('#landErr').textContent = '';
   if (!$('#age').checked){ $('#landErr').textContent = 'Please confirm you are 18 or older.'; return; }
   mode = m;
+  try { audio(); } catch (e) {}
   if (mode === 'video'){
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -158,7 +291,7 @@ async function start(m){
   setStatus('Connecting…');
 
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
-  ws.onopen = () => send({ type: 'find', mode });
+  ws.onopen = () => send({ type: 'find', mode, ...prefs() });
   ws.onmessage = e => handle(JSON.parse(e.data));
   ws.onclose = () => { if (!$('#chat').classList.contains('hidden')){ closePeer(); setConnected(false); setStatus('Disconnected. Refresh the page to reconnect.'); } };
 }
@@ -195,15 +328,22 @@ function handle(m){
       setConnected(true);
       setStatus('Connected');
       addMsg('You are connected. Say hi.', 'sys');
+      if (m.common && m.common.length) addMsg('You both like: ' + m.common.join(', '), 'sys');
+      chime(); alertTitle('Matched!');
       if (mode === 'video') startPeer(m.initiator);
       break;
+    case 'banned':
+      stop();
+      $('#landErr').textContent = 'You have been banned for 24 hours after several reports.';
+      break;
     case 'signal': queue = queue.then(() => onSignal(m.data)).catch(console.error); break;
-    case 'chat': addMsg(m.text, 'them'); break;
+    case 'chat': addMsg(m.text, 'them'); blip(); alertTitle('New message'); break;
     case 'left':
       closePeer();
       setConnected(false);
       setStatus('Stranger left');
       addMsg('Stranger left. Press Next to meet someone else.', 'sys');
+      down(); alertTitle('Stranger left');
       break;
   }
 }
@@ -245,6 +385,10 @@ function closePeer(){
 }
 
 /* ---------- Events ---------- */
+$('#soundBtn').onclick = e => {
+  soundOn = !soundOn;
+  e.target.textContent = soundOn ? 'Sound on' : 'Sound off';
+};
 $('#startVideo').onclick = () => start('video');
 $('#startText').onclick = () => start('text');
 $('#nextBtn').onclick = next;
