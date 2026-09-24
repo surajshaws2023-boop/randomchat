@@ -1,12 +1,17 @@
 {
   "name": "randomchat",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Random text and video chat with WebRTC",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
+    "google-auth-library": "^9.14.0",
+    "pg": "^8.13.0",
     "ws": "^8.18.0"
   }
 }
